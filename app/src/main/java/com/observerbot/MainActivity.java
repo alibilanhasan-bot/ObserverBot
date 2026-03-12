@@ -25,17 +25,25 @@ public class MainActivity extends Activity {
         Button startButton = findViewById(R.id.btnStart);
         Button stopButton = findViewById(R.id.btnStop);
         Button accessibilityBtn = findViewById(R.id.btnAccessibility);
+        Button dashboardBtn = findViewById(R.id.btnViewer);
 
         startButton.setOnClickListener(v -> checkAndStart());
+
         stopButton.setOnClickListener(v -> {
             stopService(new Intent(this, OverlayService.class));
             updateStatus("❌ Stopped");
         });
+
         accessibilityBtn.setOnClickListener(v -> {
             Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
             startActivity(intent);
-            Toast.makeText(this, "Enable ObserverBot Accessibility Service", Toast.LENGTH_LONG).show();
+            Toast.makeText(this,
+                "Find ObserverBot and enable it", Toast.LENGTH_LONG).show();
         });
+
+        dashboardBtn.setOnClickListener(v ->
+            startActivity(new Intent(this, SessionDashboardActivity.class))
+        );
 
         updateStatus("Tap START to begin");
     }
@@ -72,7 +80,6 @@ public class MainActivity extends Activity {
 
         if (requestCode == SCREEN_CAPTURE_REQUEST) {
             if (resultCode == RESULT_OK) {
-                // Start service and pass screen capture permission
                 Intent serviceIntent = new Intent(this, OverlayService.class);
                 serviceIntent.putExtra("resultCode", resultCode);
                 serviceIntent.putExtra("data", data);
