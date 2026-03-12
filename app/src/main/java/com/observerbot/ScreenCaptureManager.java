@@ -1,6 +1,5 @@
 package com.observerbot;
 
-import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -44,14 +43,13 @@ public class ScreenCaptureManager {
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
         virtualDisplay = mediaProjection.createVirtualDisplay(
-            "ObserverCapture",
-            width, height, density,
+            "ObserverCapture", width, height, density,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader.getSurface(), null, null
         );
     }
 
-    public void capture() {
+    public void captureForTap(int tapX, int tapY, CaptureCallback tapCallback) {
         if (imageReader == null) return;
 
         Image image = imageReader.acquireLatestImage();
@@ -64,14 +62,16 @@ public class ScreenCaptureManager {
         int rowPadding = rowStride - pixelStride * width;
 
         Bitmap bitmap = Bitmap.createBitmap(
-            width + rowPadding / pixelStride,
-            height,
-            Bitmap.Config.ARGB_8888
+            width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888
         );
         bitmap.copyPixelsFromBuffer(buffer);
         image.close();
 
-        if (callback != null) callback.onCaptured(bitmap);
+        if (tapCallback != null) tapCallback.onCaptured(bitmap);
+    }
+
+    public void capture() {
+        captureForTap(0, 0, callback);
     }
 
     public void stop() {
@@ -79,4 +79,4 @@ public class ScreenCaptureManager {
         if (mediaProjection != null) mediaProjection.stop();
         if (imageReader != null) imageReader.close();
     }
-          }
+            }
