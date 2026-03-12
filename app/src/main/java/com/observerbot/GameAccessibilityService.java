@@ -8,6 +8,8 @@ import android.view.accessibility.AccessibilityNodeInfo;
 public class GameAccessibilityService extends AccessibilityService {
 
     private static AccessibilityDataStore dataStore;
+    // Store package name so we can discover it automatically
+    private static String detectedGamePackage = "";
 
     public static void setDataStore(AccessibilityDataStore store) {
         dataStore = store;
@@ -18,8 +20,27 @@ public class GameAccessibilityService extends AccessibilityService {
         if (event == null) return;
 
         int eventType = event.getEventType();
+        String packageName = event.getPackageName() != null ?
+            event.getPackageName().toString() : "unknown";
 
-        // Detect tap position from click events — replaces the transparent overlay
+        // Skip our own overlay and pure system UI — record everything else
+        if (packageName.equals("com.observerbot") ||
+            packageName.equals("com.android.systemui") ||
+            packageName.equals("android")) {
+            return;
+        }
+
+        // Auto-detect the game package — it will be whatever app is in foreground
+        // that isn't a launcher or system app
+        if (!packageName.contains("launcher") &&
+            !packageName.contains("settings") &&
+            !packageName.contains("inputmethod") &&
+            detectedGamePackage.isEmpty()) {
+            detectedGamePackage = packageName;
+            android.util.Log.d("ObserverBot", "Detected game package: " + packageName);
+        }
+
+        // Detect tap position from click events — replaces transparent overlay
         if (eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
             eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED) {
 
@@ -31,33 +52,28 @@ public class GameAccessibilityService extends AccessibilityService {
                 int tapY = bounds.centerY();
                 source.recycle();
 
-                // Tell OverlayService a tap happened at these coordinates
                 if (OverlayService.instance != null) {
                     OverlayService.instance.onTapDetected(tapX, tapY);
                 }
             }
         }
 
-        // Also detect touch exploration (taps that don't hit a specific view)
+        // Wake the scanner on any touch
         if (eventType == AccessibilityEvent.TYPE_TOUCH_INTERACTION_START) {
-            // We still capture the screen on this event but don't have exact coords
-            // The ObserverLoop handles full-screen OCR anyway
-            if (OverlayService.instance != null && OverlayService.instance.observerLoop != null) {
+            if (OverlayService.instance != null &&
+                OverlayService.instance.observerLoop != null) {
                 OverlayService.instance.observerLoop.wakeOnTap();
             }
         }
 
-        // Store full UI tree for all events
+        // Record UI tree — for ALL apps except system (helps map full navigation)
         if (dataStore == null) return;
 
-        String packageName = event.getPackageName() != null ?
-            event.getPackageName().toString() : "unknown";
-
-        // Only record game and our own app
-        if (!packageName.contains("doomsday") &&
-            !packageName.contains("lastwar") &&
-            !packageName.contains("observerbot") &&
-            !packageName.contains("igg")) {
+        // Only record content events, skip pure window focus changes etc
+        if (eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+            eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            eventType != AccessibilityEvent.TYPE_VIEW_CLICKED &&
+            eventType != AccessibilityEvent.TYPE_VIEW_LONG_CLICKED) {
             return;
         }
 
@@ -74,7 +90,8 @@ public class GameAccessibilityService extends AccessibilityService {
         StringBuilder sb = new StringBuilder();
         String indent = "  ".repeat(depth);
 
-        String className = node.getClassName() != null ? node.getClassName().toString() : "";
+        String className = node.getClassName() != null ?
+            node.getClassName().toString() : "";
         String text = node.getText() != null ? node.getText().toString() : "";
         String desc = node.getContentDescription() != null ?
             node.getContentDescription().toString() : "";
@@ -103,3 +120,4 @@ public class GameAccessibilityService extends AccessibilityService {
     @Override
     public void onInterrupt() {}
             }
+            
