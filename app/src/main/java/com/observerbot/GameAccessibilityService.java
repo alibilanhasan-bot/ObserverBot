@@ -8,8 +8,6 @@ import android.view.accessibility.AccessibilityNodeInfo;
 public class GameAccessibilityService extends AccessibilityService {
 
     private static AccessibilityDataStore dataStore;
-    // Store package name so we can discover it automatically
-    private static String detectedGamePackage = "";
 
     public static void setDataStore(AccessibilityDataStore store) {
         dataStore = store;
@@ -23,24 +21,28 @@ public class GameAccessibilityService extends AccessibilityService {
         String packageName = event.getPackageName() != null ?
             event.getPackageName().toString() : "unknown";
 
-        // Skip our own overlay and pure system UI — record everything else
+        // Skip our own overlay and pure Android system
         if (packageName.equals("com.observerbot") ||
-            packageName.equals("com.android.systemui") ||
             packageName.equals("android")) {
             return;
         }
 
-        // Auto-detect the game package — it will be whatever app is in foreground
-        // that isn't a launcher or system app
-        if (!packageName.contains("launcher") &&
-            !packageName.contains("settings") &&
-            !packageName.contains("inputmethod") &&
-            detectedGamePackage.isEmpty()) {
-            detectedGamePackage = packageName;
-            android.util.Log.d("ObserverBot", "Detected game package: " + packageName);
+        // TYPE_TOUCH_INTERACTION_START fires on ANY touch anywhere on screen
+        // This catches game canvas taps that TYPE_VIEW_CLICKED misses
+        if (eventType == AccessibilityEvent.TYPE_TOUCH_INTERACTION_START) {
+            if (OverlayService.instance != null) {
+                // Wake the scanner immediately
+                if (OverlayService.instance.observerLoop != null) {
+                    OverlayService.instance.observerLoop.wakeOnTap();
+                }
+                // Also trigger a tap capture with center-of-screen coords
+                // (we don't have exact coords from TOUCH_INTERACTION_START)
+                OverlayService.instance.onTapDetected(-1, -1);
+            }
         }
 
-        // Detect tap position from click events — replaces transparent overlay
+        // TYPE_VIEW_CLICKED fires when a specific UI button is tapped
+        // This gives us exact coordinates
         if (eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
             eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED) {
 
@@ -54,28 +56,25 @@ public class GameAccessibilityService extends AccessibilityService {
 
                 if (OverlayService.instance != null) {
                     OverlayService.instance.onTapDetected(tapX, tapY);
+                    if (OverlayService.instance.observerLoop != null) {
+                        OverlayService.instance.observerLoop.wakeOnTap();
+                    }
                 }
             }
         }
 
-        // Wake the scanner on any touch
-        if (eventType == AccessibilityEvent.TYPE_TOUCH_INTERACTION_START) {
-            if (OverlayService.instance != null &&
-                OverlayService.instance.observerLoop != null) {
-                OverlayService.instance.observerLoop.wakeOnTap();
-            }
-        }
-
-        // Record UI tree — for ALL apps except system (helps map full navigation)
+        // Record UI tree for accessibility log
         if (dataStore == null) return;
 
-        // Only record content events, skip pure window focus changes etc
         if (eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
             eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
             eventType != AccessibilityEvent.TYPE_VIEW_CLICKED &&
             eventType != AccessibilityEvent.TYPE_VIEW_LONG_CLICKED) {
             return;
         }
+
+        // Skip system UI overlays
+        if (packageName.equals("com.android.systemui")) return;
 
         AccessibilityNodeInfo rootNode = getRootInActiveWindow();
         String uiTree = rootNode != null ? buildUiTree(rootNode, 0) : "(no root)";
@@ -119,5 +118,4 @@ public class GameAccessibilityService extends AccessibilityService {
 
     @Override
     public void onInterrupt() {}
-            }
-            
+}
