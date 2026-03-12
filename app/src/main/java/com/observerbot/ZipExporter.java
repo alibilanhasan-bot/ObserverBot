@@ -4,14 +4,14 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.os.Environment;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+
+import org.json.JSONArray;
 
 public class ZipExporter {
 
@@ -21,7 +21,7 @@ public class ZipExporter {
         this.context = context;
     }
 
-    public String export(java.util.List<ScreenLog> logs, java.util.List<Bitmap> screenshots) {
+    public String export(List<ObservationData> observations, List<Bitmap> screenshots) {
         try {
             File outputDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
             File zipFile = new File(outputDir, "observer_export_" + System.currentTimeMillis() + ".zip");
@@ -30,12 +30,8 @@ public class ZipExporter {
 
             // Write JSON log
             JSONArray jsonArray = new JSONArray();
-            for (ScreenLog log : logs) {
-                JSONObject obj = new JSONObject();
-                obj.put("screen", log.screenName);
-                obj.put("text", log.ocrText);
-                obj.put("timestamp", log.timestamp);
-                jsonArray.put(obj);
+            for (ObservationData obs : observations) {
+                jsonArray.put(obs.toJson());
             }
             ZipEntry logEntry = new ZipEntry("screen_log.json");
             zos.putNextEntry(logEntry);
