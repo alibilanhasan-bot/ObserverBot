@@ -38,7 +38,6 @@ public class OverlayService extends Service {
         createNotificationChannel();
         startForeground(1, buildNotification());
 
-        // Setup accessibility data store
         accessibilityDataStore = new AccessibilityDataStore();
         GameAccessibilityService.setDataStore(accessibilityDataStore);
 
@@ -55,7 +54,6 @@ public class OverlayService extends Service {
         if (intent != null && intent.hasExtra("resultCode")) {
             int resultCode = intent.getIntExtra("resultCode", -1);
             Intent data = intent.getParcelableExtra("data");
-
             ScreenCaptureManager manager = new ScreenCaptureManager(this);
             manager.setup(resultCode, data, null);
             setCaptureManager(manager);
@@ -69,7 +67,7 @@ public class OverlayService extends Service {
         screenObserver.setObserverLoop(observerLoop);
         tapObserver.setObserverLoop(observerLoop);
         observerLoop.start();
-        updateStatus("👁 Observing... tap anything");
+        updateStatus("👁 Observing everything...\nTap anywhere on game");
     }
 
     private void showTapDetector() {
@@ -86,12 +84,19 @@ public class OverlayService extends Service {
         );
 
         tapDetectorView.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN && captureManager != null) {
+            if (captureManager != null) {
                 int tapX = (int) event.getRawX();
                 int tapY = (int) event.getRawY();
-                captureManager.captureForTap(tapX, tapY, bitmap ->
-                    tapObserver.analyzeAtTap(bitmap, tapX, tapY)
-                );
+
+                if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                    screenObserver.getGestureRecorder().onTouchDown(tapX, tapY);
+                    captureManager.captureForTap(tapX, tapY, bitmap ->
+                        tapObserver.analyzeAtTap(bitmap, tapX, tapY)
+                    );
+                }
+                if (event.getAction() == MotionEvent.ACTION_UP) {
+                    screenObserver.getGestureRecorder().onTouchUp(tapX, tapY);
+                }
             }
             return false;
         });
@@ -129,18 +134,13 @@ public class OverlayService extends Service {
     private void exportData() {
         updateStatus("💾 Exporting all data...");
         new Thread(() -> {
-            String path = zipExporter.export(
-                screenObserver.getObservations(),
-                screenObserver.getScreenshots(),
-                accessibilityDataStore
-            );
-            int ocrCount = screenObserver.getObservations().size();
-            int accCount = accessibilityDataStore.size();
+            String path = zipExporter.export(screenObserver, accessibilityDataStore);
             if (path != null) {
                 updateStatus(
                     "✅ Export done!\n" +
-                    "📊 OCR: " + ocrCount + " obs\n" +
-                    "♿ Accessibility: " + accCount + " events\n" +
+                    "📊 OCR: " + screenObserver.getObservations().size() + "\n" +
+                    "👆 Taps: " + screenObserver.getTouchHeatmap().getTapCount() + "\n" +
+                    "🔀 Transitions: " + screenObserver.getTransitionLogger().getTransitionCount() + "\n" +
                     "📁 Saved to Documents"
                 );
             } else {
@@ -175,8 +175,6 @@ public class OverlayService extends Service {
         if (statusText != null) statusText.post(() -> statusText.setText(message));
     }
 
-    public ScreenObserver getScreenObserver() { return screenObserver; }
-
     private void createNotificationChannel() {
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID, "ObserverBot", NotificationManager.IMPORTANCE_LOW);
@@ -186,7 +184,7 @@ public class OverlayService extends Service {
     private Notification buildNotification() {
         return new Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("ObserverBot Running")
-                .setContentText("Scanning + watching taps")
+                .setContentText("Collecting all data...")
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .build();
     }
@@ -201,4 +199,4 @@ public class OverlayService extends Service {
         if (overlayView != null) windowManager.removeView(overlayView);
         if (tapDetectorView != null) windowManager.removeView(tapDetectorView);
     }
-}
+            }
