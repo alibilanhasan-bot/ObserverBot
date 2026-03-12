@@ -5,7 +5,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
-import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.os.IBinder;
 import android.view.Gravity;
@@ -20,21 +20,25 @@ public class OverlayService extends Service {
 
     private WindowManager windowManager;
     private View overlayView;
-    private View tapDetectorView;
+    private View stopButtonView;
     private TextView statusText;
 
     private ScreenObserver screenObserver;
     private TapObserver tapObserver;
-    private ObserverLoop observerLoop;
+    ObserverLoop observerLoop;   // package-accessible for GameAccessibilityService
     private ScreenCaptureManager captureManager;
     private ZipExporter zipExporter;
     private AccessibilityDataStore accessibilityDataStore;
 
     private static final String CHANNEL_ID = "ObserverBotChannel";
 
+    // Static instance so GameAccessibilityService can reach us without binding
+    public static OverlayService instance;
+
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         createNotificationChannel();
         startForeground(1, buildNotification());
 
@@ -45,8 +49,9 @@ public class OverlayService extends Service {
         tapObserver = new TapObserver(screenObserver);
         zipExporter = new ZipExporter(this);
 
+        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         showOverlay();
-        showTapDetector();
+        showStopButton();
     }
 
     @Override
@@ -67,45 +72,22 @@ public class OverlayService extends Service {
         screenObserver.setObserverLoop(observerLoop);
         tapObserver.setObserverLoop(observerLoop);
         observerLoop.start();
-        updateStatus("👁 Observing everything...\nTap anywhere on game");
+        updateStatus("👁 Observing...\nPlay the game normally");
     }
 
-    private void showTapDetector() {
-        tapDetectorView = new View(this);
-        tapDetectorView.setBackgroundColor(0x00000000);
-
-        WindowManager.LayoutParams tapParams = new WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-                PixelFormat.TRANSPARENT
-        );
-
-        tapDetectorView.setOnTouchListener((v, event) -> {
-            if (captureManager != null) {
-                int tapX = (int) event.getRawX();
-                int tapY = (int) event.getRawY();
-
-                if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                    screenObserver.getGestureRecorder().onTouchDown(tapX, tapY);
-                    captureManager.captureForTap(tapX, tapY, bitmap ->
-                        tapObserver.analyzeAtTap(bitmap, tapX, tapY)
-                    );
-                }
-                if (event.getAction() == MotionEvent.ACTION_UP) {
-                    screenObserver.getGestureRecorder().onTouchUp(tapX, tapY);
-                }
-            }
-            return false;
-        });
-
-        windowManager.addView(tapDetectorView, tapParams);
+    // Called by GameAccessibilityService when a UI element is tapped
+    // This replaces the old full-screen transparent overlay (which was blocking all touches)
+    public void onTapDetected(int x, int y) {
+        if (captureManager != null) {
+            screenObserver.getGestureRecorder().onTouchDown(x, y);
+            screenObserver.getGestureRecorder().onTouchUp(x, y);
+            captureManager.captureForTap(x, y, bitmap ->
+                tapObserver.analyzeAtTap(bitmap, x, y)
+            );
+        }
     }
 
     private void showOverlay() {
-        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         overlayView = LayoutInflater.from(this).inflate(R.layout.overlay_layout, null);
 
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
@@ -124,24 +106,75 @@ public class OverlayService extends Service {
         Button exportBtn = overlayView.findViewById(R.id.btnExport);
         exportBtn.setOnClickListener(v -> exportData());
 
-        Button stopBtn = overlayView.findViewById(R.id.emergencyStop);
-        stopBtn.setOnClickListener(v -> stopSelf());
+        // ONLY the drag handle area moves the widget
+        // Export button below it is NOT affected by the drag listener
+        View dragHandle = overlayView.findViewById(R.id.dragHandle);
+        dragHandle.setOnTouchListener(new View.OnTouchListener() {
+            int initialX, initialY;
+            float initialTouchX, initialTouchY;
 
-        makeDraggable(overlayView, params);
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        initialX = params.x;
+                        initialY = params.y;
+                        initialTouchX = event.getRawX();
+                        initialTouchY = event.getRawY();
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        params.x = initialX + (int) (event.getRawX() - initialTouchX);
+                        params.y = initialY + (int) (event.getRawY() - initialTouchY);
+                        windowManager.updateViewLayout(overlayView, params);
+                        return true;
+                }
+                return false;
+            }
+        });
+
         windowManager.addView(overlayView, params);
     }
 
+    // Completely separate stop button — fixed at bottom corner
+    // Cannot be blocked by overlay widget or any other view
+    private void showStopButton() {
+        Button stopBtn = new Button(this);
+        stopButtonView = stopBtn;
+        stopBtn.setText("⛔ STOP BOT");
+        stopBtn.setTextColor(Color.WHITE);
+        stopBtn.setTextSize(13f);
+        stopBtn.setPadding(20, 10, 20, 10);
+        stopBtn.setBackgroundColor(Color.parseColor("#cc0000"));
+
+        stopBtn.setOnClickListener(v -> {
+            stopBtn.setText("🛑 Stopping...");
+            stopSelf();
+        });
+
+        WindowManager.LayoutParams stopParams = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+        );
+        stopParams.gravity = Gravity.BOTTOM | Gravity.END;
+        stopParams.x = 16;
+        stopParams.y = 80;
+
+        windowManager.addView(stopButtonView, stopParams);
+    }
+
     private void exportData() {
-        updateStatus("💾 Exporting all data...");
+        updateStatus("💾 Exporting...");
         new Thread(() -> {
             String path = zipExporter.export(screenObserver, accessibilityDataStore);
             if (path != null) {
                 updateStatus(
-                    "✅ Export done!\n" +
-                    "📊 OCR: " + screenObserver.getObservations().size() + "\n" +
-                    "👆 Taps: " + screenObserver.getTouchHeatmap().getTapCount() + "\n" +
-                    "🔀 Transitions: " + screenObserver.getTransitionLogger().getTransitionCount() + "\n" +
-                    "📁 Saved to Documents"
+                    "✅ Done!\n" +
+                    "OCR: " + screenObserver.getObservations().size() + "\n" +
+                    "Taps: " + screenObserver.getTouchHeatmap().getTapCount() + "\n" +
+                    "Saved to Documents"
                 );
             } else {
                 updateStatus("❌ Export failed");
@@ -149,30 +182,10 @@ public class OverlayService extends Service {
         }).start();
     }
 
-    private void makeDraggable(View view, WindowManager.LayoutParams params) {
-        view.setOnTouchListener(new View.OnTouchListener() {
-            int initialX, initialY;
-            float initialTouchX, initialTouchY;
-            @Override
-            public boolean onTouch(View v, MotionEvent event) {
-                switch (event.getAction()) {
-                    case MotionEvent.ACTION_DOWN:
-                        initialX = params.x; initialY = params.y;
-                        initialTouchX = event.getRawX(); initialTouchY = event.getRawY();
-                        return true;
-                    case MotionEvent.ACTION_MOVE:
-                        params.x = initialX + (int)(event.getRawX() - initialTouchX);
-                        params.y = initialY + (int)(event.getRawY() - initialTouchY);
-                        windowManager.updateViewLayout(view, params);
-                        return true;
-                }
-                return false;
-            }
-        });
-    }
-
     public void updateStatus(String message) {
-        if (statusText != null) statusText.post(() -> statusText.setText(message));
+        if (statusText != null) {
+            statusText.post(() -> statusText.setText(message));
+        }
     }
 
     private void createNotificationChannel() {
@@ -184,7 +197,7 @@ public class OverlayService extends Service {
     private Notification buildNotification() {
         return new Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("ObserverBot Running")
-                .setContentText("Collecting all data...")
+                .setContentText("Tap ⛔ STOP BOT (bottom right) to stop anytime")
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .build();
     }
@@ -195,8 +208,13 @@ public class OverlayService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        instance = null;
         if (observerLoop != null) observerLoop.stop();
-        if (overlayView != null) windowManager.removeView(overlayView);
-        if (tapDetectorView != null) windowManager.removeView(tapDetectorView);
+        if (overlayView != null) {
+            try { windowManager.removeView(overlayView); } catch (Exception ignored) {}
+        }
+        if (stopButtonView != null) {
+            try { windowManager.removeView(stopButtonView); } catch (Exception ignored) {}
+        }
     }
-            }
+}
