@@ -3,45 +3,54 @@
     android:layout_width="wrap_content"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:background="#cc000000"
-    android:padding="10dp"
-    android:minWidth="220dp">
+    android:background="#CC1a1a2e"
+    android:minWidth="160dp">
 
-    <TextView
-        android:layout_width="wrap_content"
+    <!-- DRAG HANDLE — only this area moves the widget, buttons below are freely tappable -->
+    <LinearLayout
+        android:id="@+id/dragHandle"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="👁 ObserverBot"
-        android:textColor="#f0c040"
-        android:textStyle="bold"
-        android:textSize="13sp"
-        android:layout_marginBottom="6dp"/>
+        android:background="#CC0d1b2a"
+        android:padding="8dp"
+        android:orientation="vertical">
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="👁 ObserverBot"
+            android:textColor="#f0c040"
+            android:textSize="11sp"
+            android:textStyle="bold"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="drag here to move"
+            android:textColor="#666666"
+            android:textSize="9sp"/>
+
+    </LinearLayout>
+
+    <!-- Status text — informational, inside drag area -->
     <TextView
         android:id="@+id/statusText"
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Tap anywhere on game screen"
-        android:textColor="#ffffff"
-        android:textSize="11sp"
-        android:layout_marginBottom="10dp"/>
+        android:text="Starting..."
+        android:textColor="#cccccc"
+        android:textSize="10sp"
+        android:padding="8dp"
+        android:background="#CC16213e"/>
 
+    <!-- Export button — freely clickable, NOT part of drag handle -->
     <Button
         android:id="@+id/btnExport"
         android:layout_width="match_parent"
         android:layout_height="36dp"
         android:text="💾 EXPORT ZIP"
-        android:textSize="12sp"
-        android:backgroundTint="#2ecc71"
-        android:textColor="#ffffff"
-        android:layout_marginBottom="6dp"/>
-
-    <Button
-        android:id="@+id/emergencyStop"
-        android:layout_width="match_parent"
-        android:layout_height="36dp"
-        android:text="⛔ STOP"
-        android:textSize="12sp"
-        android:backgroundTint="#ff6b6b"
-        android:textColor="#ffffff"/>
+        android:textSize="11sp"
+        android:textColor="#1a1a2e"
+        android:backgroundTint="#f0c040"/>
 
 </LinearLayout>
