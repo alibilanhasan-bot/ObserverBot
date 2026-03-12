@@ -28,6 +28,7 @@ public class OverlayService extends Service {
     private ObserverLoop observerLoop;
     private ScreenCaptureManager captureManager;
     private ZipExporter zipExporter;
+    private AccessibilityDataStore accessibilityDataStore;
 
     private static final String CHANNEL_ID = "ObserverBotChannel";
 
@@ -37,12 +38,29 @@ public class OverlayService extends Service {
         createNotificationChannel();
         startForeground(1, buildNotification());
 
+        // Setup accessibility data store
+        accessibilityDataStore = new AccessibilityDataStore();
+        GameAccessibilityService.setDataStore(accessibilityDataStore);
+
         screenObserver = new ScreenObserver(this);
         tapObserver = new TapObserver(screenObserver);
         zipExporter = new ZipExporter(this);
 
         showOverlay();
         showTapDetector();
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && intent.hasExtra("resultCode")) {
+            int resultCode = intent.getIntExtra("resultCode", -1);
+            Intent data = intent.getParcelableExtra("data");
+
+            ScreenCaptureManager manager = new ScreenCaptureManager(this);
+            manager.setup(resultCode, data, null);
+            setCaptureManager(manager);
+        }
+        return START_STICKY;
     }
 
     public void setCaptureManager(ScreenCaptureManager captureManager) {
@@ -109,20 +127,24 @@ public class OverlayService extends Service {
     }
 
     private void exportData() {
-        updateStatus("💾 Exporting...");
+        updateStatus("💾 Exporting all data...");
         new Thread(() -> {
             String path = zipExporter.export(
                 screenObserver.getObservations(),
-                screenObserver.getScreenshots()
+                screenObserver.getScreenshots(),
+                accessibilityDataStore
             );
+            int ocrCount = screenObserver.getObservations().size();
+            int accCount = accessibilityDataStore.size();
             if (path != null) {
                 updateStatus(
-                    "✅ Export saved!\n" +
-                    "📦 " + screenObserver.getObservations().size() + " observations\n" +
-                    "📁 " + path
+                    "✅ Export done!\n" +
+                    "📊 OCR: " + ocrCount + " obs\n" +
+                    "♿ Accessibility: " + accCount + " events\n" +
+                    "📁 Saved to Documents"
                 );
             } else {
-                updateStatus("❌ Export failed. Check storage permission.");
+                updateStatus("❌ Export failed");
             }
         }).start();
     }
@@ -179,4 +201,4 @@ public class OverlayService extends Service {
         if (overlayView != null) windowManager.removeView(overlayView);
         if (tapDetectorView != null) windowManager.removeView(tapDetectorView);
     }
-                }
+}
