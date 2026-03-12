@@ -19,13 +19,15 @@ import android.widget.TextView;
 public class OverlayService extends Service {
 
     private WindowManager windowManager;
-    private View overlayView;
-    private View stopButtonView;
+    private View overlayView;       // the small info widget top-left
+    private View tapDetectorView;   // invisible full-screen — passes ALL touches through
+    private View stopButtonView;    // dedicated stop button bottom-right
+
     private TextView statusText;
 
     private ScreenObserver screenObserver;
     private TapObserver tapObserver;
-    ObserverLoop observerLoop; // package-accessible for GameAccessibilityService
+    ObserverLoop observerLoop;
     private ScreenCaptureManager captureManager;
     private ZipExporter zipExporter;
     private AccessibilityDataStore accessibilityDataStore;
@@ -48,6 +50,9 @@ public class OverlayService extends Service {
         zipExporter = new ZipExporter(this);
 
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+
+        // Order matters: tap detector first (bottom layer), then overlay widget, then stop button
+        showTapDetector();
         showOverlay();
         showStopButton();
     }
@@ -70,23 +75,52 @@ public class OverlayService extends Service {
         screenObserver.setObserverLoop(observerLoop);
         tapObserver.setObserverLoop(observerLoop);
         observerLoop.start();
-        // Status is set by ObserverLoop during startup delay
     }
 
-    // Called by GameAccessibilityService on any touch
-    // x=-1, y=-1 means we have no coords (from TOUCH_INTERACTION_START)
-    public void onTapDetected(int x, int y) {
-        if (captureManager == null) return;
+    // Invisible full-screen view that sees tap coordinates but NEVER blocks touches
+    private void showTapDetector() {
+        tapDetectorView = new View(this);
+        tapDetectorView.setBackgroundColor(0x00000000); // fully transparent
 
-        if (x >= 0 && y >= 0) {
-            // We have exact coordinates — do a tap crop scan
-            screenObserver.getGestureRecorder().onTouchDown(x, y);
-            screenObserver.getGestureRecorder().onTouchUp(x, y);
-            captureManager.captureForTap(x, y, bitmap ->
-                tapObserver.analyzeAtTap(bitmap, x, y)
-            );
-        }
-        // If no coords, the ObserverLoop's next scan will pick up the change anyway
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                // KEY FLAGS:
+                // FLAG_NOT_FOCUSABLE — doesn't steal keyboard focus
+                // FLAG_NOT_TOUCHABLE is NOT set — we need to receive touches
+                // But we ALWAYS return false to pass touches through to the game
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSPARENT
+        );
+
+        tapDetectorView.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                int tapX = (int) event.getRawX();
+                int tapY = (int) event.getRawY();
+
+                // Wake scanner and record tap
+                if (observerLoop != null) observerLoop.wakeOnTap();
+
+                if (captureManager != null) {
+                    screenObserver.getGestureRecorder().onTouchDown(tapX, tapY);
+                    captureManager.captureForTap(tapX, tapY, bitmap ->
+                        tapObserver.analyzeAtTap(bitmap, tapX, tapY)
+                    );
+                }
+            }
+
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                int tapX = (int) event.getRawX();
+                int tapY = (int) event.getRawY();
+                screenObserver.getGestureRecorder().onTouchUp(tapX, tapY);
+            }
+
+            // CRITICAL: always return false — touch passes straight through to game
+            return false;
+        });
+
+        windowManager.addView(tapDetectorView, params);
     }
 
     private void showOverlay() {
@@ -108,7 +142,7 @@ public class OverlayService extends Service {
         Button exportBtn = overlayView.findViewById(R.id.btnExport);
         exportBtn.setOnClickListener(v -> exportData());
 
-        // Drag handle only — buttons below are freely clickable
+        // Drag handle — only this part moves the widget
         View dragHandle = overlayView.findViewById(R.id.dragHandle);
         dragHandle.setOnTouchListener(new View.OnTouchListener() {
             int initialX, initialY;
@@ -122,7 +156,7 @@ public class OverlayService extends Service {
                         initialY = params.y;
                         initialTouchX = event.getRawX();
                         initialTouchY = event.getRawY();
-                        return true;
+                        return true; // consume — this is intentional for dragging
                     case MotionEvent.ACTION_MOVE:
                         params.x = initialX + (int) (event.getRawX() - initialTouchX);
                         params.y = initialY + (int) (event.getRawY() - initialTouchY);
@@ -161,6 +195,15 @@ public class OverlayService extends Service {
         stopParams.y = 80;
 
         windowManager.addView(stopButtonView, stopParams);
+    }
+
+    // Called by GameAccessibilityService as a backup for exact UI button coords
+    public void onTapDetected(int x, int y) {
+        if (captureManager != null && x >= 0 && y >= 0) {
+            captureManager.captureForTap(x, y, bitmap ->
+                tapObserver.analyzeAtTap(bitmap, x, y)
+            );
+        }
     }
 
     private void exportData() {
@@ -209,6 +252,9 @@ public class OverlayService extends Service {
         instance = null;
         if (observerLoop != null) observerLoop.stop();
         if (captureManager != null) captureManager.stop();
+        if (tapDetectorView != null) {
+            try { windowManager.removeView(tapDetectorView); } catch (Exception ignored) {}
+        }
         if (overlayView != null) {
             try { windowManager.removeView(overlayView); } catch (Exception ignored) {}
         }
@@ -216,5 +262,4 @@ public class OverlayService extends Service {
             try { windowManager.removeView(stopButtonView); } catch (Exception ignored) {}
         }
     }
-    }
-                                                    
+                }
