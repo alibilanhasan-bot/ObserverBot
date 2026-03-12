@@ -1,90 +1,105 @@
 package com.observerbot;
 
 import android.accessibilityservice.AccessibilityService;
+import android.graphics.Rect;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
-
 public class GameAccessibilityService extends AccessibilityService {
 
-    private static GameAccessibilityService instance;
     private static AccessibilityDataStore dataStore;
-
-    public static GameAccessibilityService getInstance() { return instance; }
 
     public static void setDataStore(AccessibilityDataStore store) {
         dataStore = store;
     }
 
     @Override
-    public void onServiceConnected() {
-        instance = this;
-    }
-
-    @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (event == null) return;
+
+        int eventType = event.getEventType();
+
+        // Detect tap position from click events — replaces the transparent overlay
+        if (eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
+            eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED) {
+
+            AccessibilityNodeInfo source = event.getSource();
+            if (source != null) {
+                Rect bounds = new Rect();
+                source.getBoundsInScreen(bounds);
+                int tapX = bounds.centerX();
+                int tapY = bounds.centerY();
+                source.recycle();
+
+                // Tell OverlayService a tap happened at these coordinates
+                if (OverlayService.instance != null) {
+                    OverlayService.instance.onTapDetected(tapX, tapY);
+                }
+            }
+        }
+
+        // Also detect touch exploration (taps that don't hit a specific view)
+        if (eventType == AccessibilityEvent.TYPE_TOUCH_INTERACTION_START) {
+            // We still capture the screen on this event but don't have exact coords
+            // The ObserverLoop handles full-screen OCR anyway
+            if (OverlayService.instance != null && OverlayService.instance.observerLoop != null) {
+                OverlayService.instance.observerLoop.wakeOnTap();
+            }
+        }
+
+        // Store full UI tree for all events
         if (dataStore == null) return;
 
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return;
+        String packageName = event.getPackageName() != null ?
+            event.getPackageName().toString() : "unknown";
 
-        AccessibilityData data = new AccessibilityData();
-        data.timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS",
-            Locale.getDefault()).format(new Date());
-        data.eventType = AccessibilityEvent.eventTypeToString(event.getEventType());
-        data.packageName = event.getPackageName() != null ?
-            event.getPackageName().toString() : "";
+        // Only record game and our own app
+        if (!packageName.contains("doomsday") &&
+            !packageName.contains("lastwar") &&
+            !packageName.contains("observerbot") &&
+            !packageName.contains("igg")) {
+            return;
+        }
 
-        // Recursively extract all UI elements
-        StringBuilder sb = new StringBuilder();
-        extractNodeTree(root, sb, 0);
-        data.uiTree = sb.toString();
+        AccessibilityNodeInfo rootNode = getRootInActiveWindow();
+        String uiTree = rootNode != null ? buildUiTree(rootNode, 0) : "(no root)";
+        if (rootNode != null) rootNode.recycle();
 
-        dataStore.add(data);
-        root.recycle();
+        String eventTypeName = AccessibilityEvent.eventTypeToString(eventType);
+        dataStore.add(new AccessibilityData(packageName, eventTypeName, uiTree));
     }
 
-    private void extractNodeTree(AccessibilityNodeInfo node, StringBuilder sb, int depth) {
-        if (node == null) return;
+    private String buildUiTree(AccessibilityNodeInfo node, int depth) {
+        if (node == null || depth > 8) return "";
+        StringBuilder sb = new StringBuilder();
+        String indent = "  ".repeat(depth);
 
-        String indent = new String(new char[depth * 2]).replace('\0', ' ');
+        String className = node.getClassName() != null ? node.getClassName().toString() : "";
         String text = node.getText() != null ? node.getText().toString() : "";
         String desc = node.getContentDescription() != null ?
             node.getContentDescription().toString() : "";
-        String className = node.getClassName() != null ?
-            node.getClassName().toString() : "";
-
-        // Get bounds
-        android.graphics.Rect bounds = new android.graphics.Rect();
+        Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
 
-        // Only record nodes that have useful content
-        if (!text.isEmpty() || !desc.isEmpty()) {
-            sb.append(indent)
-              .append("[").append(className.contains(".") ?
-                  className.substring(className.lastIndexOf('.') + 1) : className).append("]")
-              .append(" text='").append(text).append("'")
-              .append(" desc='").append(desc).append("'")
-              .append(" bounds=").append(bounds.left).append(",").append(bounds.top)
-              .append(",").append(bounds.right).append(",").append(bounds.bottom)
-              .append(" clickable=").append(node.isClickable())
-              .append("\n");
-        }
+        sb.append(indent)
+          .append(className.contains(".") ?
+              className.substring(className.lastIndexOf('.') + 1) : className);
+        if (!text.isEmpty()) sb.append(" text=\"").append(text).append("\"");
+        if (!desc.isEmpty()) sb.append(" desc=\"").append(desc).append("\"");
+        if (node.isClickable()) sb.append(" [clickable]");
+        sb.append(" ").append(bounds.toShortString());
+        sb.append("\n");
 
         for (int i = 0; i < node.getChildCount(); i++) {
-            extractNodeTree(node.getChild(i), sb, depth + 1);
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                sb.append(buildUiTree(child, depth + 1));
+                child.recycle();
+            }
         }
+        return sb.toString();
     }
 
     @Override
     public void onInterrupt() {}
-
-    @Override
-    public void onDestroy() {
-        super.onDestroy();
-        instance = null;
-    }
-}
+            }
