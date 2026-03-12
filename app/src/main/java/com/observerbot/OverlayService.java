@@ -25,14 +25,12 @@ public class OverlayService extends Service {
 
     private ScreenObserver screenObserver;
     private TapObserver tapObserver;
-    ObserverLoop observerLoop;   // package-accessible for GameAccessibilityService
+    ObserverLoop observerLoop; // package-accessible for GameAccessibilityService
     private ScreenCaptureManager captureManager;
     private ZipExporter zipExporter;
     private AccessibilityDataStore accessibilityDataStore;
 
     private static final String CHANNEL_ID = "ObserverBotChannel";
-
-    // Static instance so GameAccessibilityService can reach us without binding
     public static OverlayService instance;
 
     @Override
@@ -72,19 +70,23 @@ public class OverlayService extends Service {
         screenObserver.setObserverLoop(observerLoop);
         tapObserver.setObserverLoop(observerLoop);
         observerLoop.start();
-        updateStatus("👁 Observing...\nPlay the game normally");
+        // Status is set by ObserverLoop during startup delay
     }
 
-    // Called by GameAccessibilityService when a UI element is tapped
-    // This replaces the old full-screen transparent overlay (which was blocking all touches)
+    // Called by GameAccessibilityService on any touch
+    // x=-1, y=-1 means we have no coords (from TOUCH_INTERACTION_START)
     public void onTapDetected(int x, int y) {
-        if (captureManager != null) {
+        if (captureManager == null) return;
+
+        if (x >= 0 && y >= 0) {
+            // We have exact coordinates — do a tap crop scan
             screenObserver.getGestureRecorder().onTouchDown(x, y);
             screenObserver.getGestureRecorder().onTouchUp(x, y);
             captureManager.captureForTap(x, y, bitmap ->
                 tapObserver.analyzeAtTap(bitmap, x, y)
             );
         }
+        // If no coords, the ObserverLoop's next scan will pick up the change anyway
     }
 
     private void showOverlay() {
@@ -106,8 +108,7 @@ public class OverlayService extends Service {
         Button exportBtn = overlayView.findViewById(R.id.btnExport);
         exportBtn.setOnClickListener(v -> exportData());
 
-        // ONLY the drag handle area moves the widget
-        // Export button below it is NOT affected by the drag listener
+        // Drag handle only — buttons below are freely clickable
         View dragHandle = overlayView.findViewById(R.id.dragHandle);
         dragHandle.setOnTouchListener(new View.OnTouchListener() {
             int initialX, initialY;
@@ -135,8 +136,6 @@ public class OverlayService extends Service {
         windowManager.addView(overlayView, params);
     }
 
-    // Completely separate stop button — fixed at bottom corner
-    // Cannot be blocked by overlay widget or any other view
     private void showStopButton() {
         Button stopBtn = new Button(this);
         stopButtonView = stopBtn;
@@ -145,7 +144,6 @@ public class OverlayService extends Service {
         stopBtn.setTextSize(13f);
         stopBtn.setPadding(20, 10, 20, 10);
         stopBtn.setBackgroundColor(Color.parseColor("#cc0000"));
-
         stopBtn.setOnClickListener(v -> {
             stopBtn.setText("🛑 Stopping...");
             stopSelf();
@@ -197,7 +195,7 @@ public class OverlayService extends Service {
     private Notification buildNotification() {
         return new Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("ObserverBot Running")
-                .setContentText("Tap ⛔ STOP BOT (bottom right) to stop anytime")
+                .setContentText("Tap ⛔ STOP BOT (bottom right) to stop")
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .build();
     }
@@ -210,6 +208,7 @@ public class OverlayService extends Service {
         super.onDestroy();
         instance = null;
         if (observerLoop != null) observerLoop.stop();
+        if (captureManager != null) captureManager.stop();
         if (overlayView != null) {
             try { windowManager.removeView(overlayView); } catch (Exception ignored) {}
         }
@@ -217,4 +216,5 @@ public class OverlayService extends Service {
             try { windowManager.removeView(stopButtonView); } catch (Exception ignored) {}
         }
     }
-}
+    }
+                                                    
