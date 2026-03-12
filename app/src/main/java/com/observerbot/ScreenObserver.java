@@ -18,7 +18,6 @@ public class ScreenObserver {
     private final List<Bitmap> screenshots = new ArrayList<>();
     private ObserverLoop observerLoop;
 
-    // All new collectors
     private TouchHeatmap touchHeatmap;
     private GestureRecorder gestureRecorder;
     private ScreenTransitionLogger transitionLogger;
@@ -32,11 +31,9 @@ public class ScreenObserver {
         this.service = service;
         this.recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
 
-        // Initialize all collectors
-        touchHeatmap = new TouchHeatmap(
-            service.getResources().getDisplayMetrics().widthPixels,
-            service.getResources().getDisplayMetrics().heightPixels
-        );
+        int w = service.getResources().getDisplayMetrics().widthPixels;
+        int h = service.getResources().getDisplayMetrics().heightPixels;
+        touchHeatmap = new TouchHeatmap(w, h);
         gestureRecorder = new GestureRecorder();
         transitionLogger = new ScreenTransitionLogger();
         colorSampler = new ColorSampler();
@@ -48,15 +45,15 @@ public class ScreenObserver {
         this.observerLoop = loop;
     }
 
-    // Called by ObserverLoop every 500ms - full screen scan
     public void analyzeFullScreen(Bitmap bitmap) {
+        // bitmap is already a safe independent copy from ScreenCaptureManager
         InputImage image = InputImage.fromBitmap(bitmap, 0);
+
         recognizer.process(image)
             .addOnSuccessListener(result -> {
                 String text = result.getText();
                 String screenType = identifyScreen(text);
 
-                // Build observation with confidence scores
                 ObservationData obs = new ObservationData(screenType, text);
                 obs.ui.coordinates = "FULL_SCREEN";
                 UITextExtractor.extract(text, obs.ui);
@@ -65,13 +62,9 @@ public class ScreenObserver {
                 observations.add(obs);
                 screenshots.add(bitmap);
 
-                // Color sample
                 colorSampler.sample(bitmap, screenType);
-
-                // Frame diff
                 frameDifferencer.diff(bitmap, screenType);
 
-                // Screen transition
                 if (!screenType.equals(lastScreenType)) {
                     transitionLogger.onScreenDetected(screenType);
                     if (!lastScreenType.isEmpty()) {
@@ -80,31 +73,31 @@ public class ScreenObserver {
                     lastScreenType = screenType;
                 }
 
-                // Session timeline
                 sessionTimeline.logScreen(screenType);
-
-                // Gesture recorder current screen
                 gestureRecorder.setCurrentScreen(screenType);
 
                 service.updateStatus(
                     "🔄 Scan #" + observations.size() + "\n" +
                     "Screen: " + screenType + "\n" +
                     "Taps: " + touchHeatmap.getTapCount() +
-                    "  Transitions: " + transitionLogger.getTransitionCount()
+                    "  Trans: " + transitionLogger.getTransitionCount() + "\n" +
+                    "OCR chars: " + text.length()
                 );
 
                 if (observerLoop != null) {
                     observerLoop.onScreenDetected(screenType);
                 }
             })
-            .addOnFailureListener(e ->
-                service.updateStatus("OCR Error: " + e.getMessage())
-            );
+            .addOnFailureListener(e -> {
+                service.updateStatus("❌ OCR Error: " + e.getMessage());
+                // Still recycle bitmap on failure
+                bitmap.recycle();
+            });
     }
 
-    // Called by TapObserver on tap
     public void analyzeTapRegion(Bitmap cropped, int tapX, int tapY) {
         InputImage image = InputImage.fromBitmap(cropped, 0);
+
         recognizer.process(image)
             .addOnSuccessListener(result -> {
                 String text = result.getText().trim();
@@ -117,34 +110,26 @@ public class ScreenObserver {
                 observations.add(obs);
                 screenshots.add(cropped);
 
-                // Record in heatmap
                 touchHeatmap.recordTap(tapX, tapY, lastScreenType);
-
-                // Record gesture
                 gestureRecorder.onTouchDown(tapX, tapY);
                 gestureRecorder.onTouchUp(tapX, tapY);
-
-                // Color at tap
-                colorSampler.sampleAtTap(cropped, 0, 0);
-
-                // Timeline
                 sessionTimeline.logTap(tapX, tapY, lastScreenType);
 
                 service.updateStatus(
                     "👆 Tap X:" + tapX + " Y:" + tapY + "\n" +
-                    "Text: " + (text.isEmpty() ? "(none)" : text) + "\n" +
-                    "Total logs: " + observations.size()
+                    "Screen: " + lastScreenType + "\n" +
+                    "Text: " + (text.isEmpty() ? "(none)" : text.substring(0, Math.min(40, text.length()))) + "\n" +
+                    "Total taps: " + touchHeatmap.getTapCount()
                 );
             })
-            .addOnFailureListener(e ->
-                service.updateStatus("Tap OCR Error: " + e.getMessage())
-            );
+            .addOnFailureListener(e -> {
+                cropped.recycle();
+            });
     }
 
-    // Extract ML Kit confidence scores for each word
     private void addConfidenceScores(Text result, ObservationData obs) {
         StringBuilder confident = new StringBuilder();
-        StringBuilder lowConfidence = new StringBuilder();
+        StringBuilder lowConf = new StringBuilder();
 
         for (Text.TextBlock block : result.getTextBlocks()) {
             for (Text.Line line : block.getLines()) {
@@ -154,36 +139,50 @@ public class ScreenObserver {
                         if (conf >= 0.85f) {
                             confident.append(element.getText()).append(" ");
                         } else {
-                            lowConfidence.append(element.getText())
+                            lowConf.append(element.getText())
                                 .append("(").append(String.format("%.0f%%", conf * 100)).append(") ");
                         }
                     }
                 }
             }
         }
-        // Store in raw text field with markers
-        if (confident.length() > 0 || lowConfidence.length() > 0) {
-            obs.rawOcrText = obs.rawOcrText
-                + "\n[HIGH_CONF]: " + confident.toString().trim()
-                + "\n[LOW_CONF]: " + lowConfidence.toString().trim();
+        if (confident.length() > 0 || lowConf.length() > 0) {
+            obs.rawOcrText += "\n[HIGH_CONF]: " + confident.toString().trim()
+                           + "\n[LOW_CONF]: " + lowConf.toString().trim();
         }
     }
 
     private String identifyScreen(String text) {
+        if (text == null || text.isEmpty()) return "UNKNOWN";
+
+        // Donation screens
         if (text.contains("Donation Chances")) {
             if (text.contains("0/30") || text.contains("Insufficient")) return "DONATION_EXHAUSTED";
             return "DONATION_AVAILABLE";
         }
+        // Alliance screens
         if (text.contains("TECHNOLOGY") || text.contains("Today Donations")) return "ALLIANCE_TECHNOLOGY";
         if (text.contains("Activity Rewards") || text.contains("Shop Rewards")) return "ALLIANCE_GIFT";
         if (text.contains("ALLIANCE") && text.contains("Technology")) return "ALLIANCE_HOME";
+        // Mission screens
         if (text.contains("Daily Missions")) return "DAILY_MISSIONS";
         if (text.contains("Main Missions")) return "MAIN_MISSIONS";
+        // VIP
         if (text.contains("Claim Free Daily") || text.contains("Today VIP Points")) return "VIP_SCREEN";
+        // Search screens
         if (text.contains("Defeat Zombies")) return "ZOMBIE_SEARCH";
         if (text.contains("Deploy Engine Squad")) return "FIELD_SEARCH";
+        // Popups
         if (text.contains("Auto collect AFK")) return "AFK_POPUP";
+        // Map
         if (text.contains("X:") && text.contains("Y:")) return "WORLD_MAP";
+        // Base/city — what we saw in the screenshots
+        if (text.contains("Alliance Center") || text.contains("Engine Barracks") ||
+            text.contains("Trading Post") || text.contains("Rider Barracks")) return "BASE_CITY";
+        if (text.contains("General Notice") || text.contains("Optimized Mode")) return "BASE_CITY";
+        if (text.contains("Campaign") && text.contains("Alliance") &&
+            text.contains("Hero")) return "BASE_CITY";
+
         return "UNKNOWN";
     }
 
@@ -196,4 +195,4 @@ public class ScreenObserver {
     public FrameDifferencer getFrameDifferencer() { return frameDifferencer; }
     public SessionTimeline getSessionTimeline() { return sessionTimeline; }
     public void clearAll() { observations.clear(); screenshots.clear(); }
-            }
+                    }
