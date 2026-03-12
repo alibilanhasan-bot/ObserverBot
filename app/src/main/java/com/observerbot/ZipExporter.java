@@ -24,46 +24,78 @@ public class ZipExporter {
         this.deviceStateCollector = new DeviceStateCollector(context);
     }
 
-    public String export(
-            List<ObservationData> observations,
-            List<Bitmap> screenshots,
-            AccessibilityDataStore accessibilityStore) {
+    public String export(ScreenObserver screenObserver, AccessibilityDataStore accessibilityStore) {
         try {
             File outputDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
-            String timestamp = String.valueOf(System.currentTimeMillis());
-            File zipFile = new File(outputDir, "observer_export_" + timestamp + ".zip");
-
+            String ts = String.valueOf(System.currentTimeMillis());
+            File zipFile = new File(outputDir, "observer_export_" + ts + ".zip");
             ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile));
 
-            // 1. OCR observations JSON
-            JSONArray ocrArray = new JSONArray();
-            for (ObservationData obs : observations) {
-                ocrArray.put(obs.toJson());
-            }
-            writeZipEntry(zos, "ocr_observations.json", ocrArray.toString(2));
+            List<ObservationData> observations = screenObserver.getObservations();
+            List<Bitmap> screenshots = screenObserver.getScreenshots();
 
-            // 2. Accessibility UI tree JSON
+            // 1. OCR observations
+            JSONArray ocrArray = new JSONArray();
+            for (ObservationData obs : observations) ocrArray.put(obs.toJson());
+            writeEntry(zos, "ocr_observations.json", ocrArray.toString(2));
+
+            // 2. Accessibility log
             if (accessibilityStore != null) {
                 JSONArray accArray = new JSONArray();
-                for (AccessibilityData acc : accessibilityStore.getAll()) {
-                    accArray.put(acc.toJson());
-                }
-                writeZipEntry(zos, "accessibility_log.json", accArray.toString(2));
+                for (AccessibilityData acc : accessibilityStore.getAll()) accArray.put(acc.toJson());
+                writeEntry(zos, "accessibility_log.json", accArray.toString(2));
             }
 
-            // 3. Device state snapshot
+            // 3. Touch heatmap
+            TouchHeatmap heatmap = screenObserver.getTouchHeatmap();
+            JSONObject heatmapData = new JSONObject();
+            heatmapData.put("tap_points", heatmap.getTapPointsJson());
+            heatmapData.put("heatmap_grid", heatmap.getHeatmapGrid());
+            writeEntry(zos, "touch_heatmap.json", heatmapData.toString(2));
+
+            // 4. Gestures
+            writeEntry(zos, "gestures.json",
+                screenObserver.getGestureRecorder().toJson().toString(2));
+
+            // 5. Screen transitions
+            JSONObject transObj = new JSONObject();
+            transObj.put("transitions", screenObserver.getTransitionLogger().getTransitionsJson());
+            transObj.put("stats", screenObserver.getTransitionLogger().getStatsJson());
+            writeEntry(zos, "screen_transitions.json", transObj.toString(2));
+
+            // 6. Frame diffs
+            writeEntry(zos, "frame_diffs.json",
+                screenObserver.getFrameDifferencer().getDiffsJson().toString(2));
+
+            // 7. Session timeline
+            JSONObject timelineObj = new JSONObject();
+            timelineObj.put("events", screenObserver.getSessionTimeline().toJson());
+            timelineObj.put("summary", screenObserver.getSessionTimeline().getSummary());
+            writeEntry(zos, "session_timeline.json", timelineObj.toString(2));
+
+            // 8. Device state
             JSONObject deviceState = deviceStateCollector.collect();
             deviceState.put("total_ocr_observations", observations.size());
-            deviceState.put("total_accessibility_events",
-                accessibilityStore != null ? accessibilityStore.size() : 0);
-            deviceState.put("total_screenshots", screenshots.size());
-            writeZipEntry(zos, "device_state.json", deviceState.toString(2));
+            deviceState.put("total_taps", heatmap.getTapCount());
+            deviceState.put("total_gestures", screenObserver.getGestureRecorder().getCount());
+            deviceState.put("total_transitions", screenObserver.getTransitionLogger().getTransitionCount());
+            deviceState.put("total_frame_diffs", screenObserver.getFrameDifferencer().getDiffCount());
+            deviceState.put("total_timeline_events", screenObserver.getSessionTimeline().getEventCount());
+            writeEntry(zos, "device_state.json", deviceState.toString(2));
 
-            // 4. Summary stats
-            JSONObject summary = buildSummary(observations);
-            writeZipEntry(zos, "summary.json", summary.toString(2));
+            // 9. Summary
+            writeEntry(zos, "summary.json", buildSummary(screenObserver).toString(2));
 
-            // 5. Screenshots
+            // 10. HTML report - open this in any browser
+            String htmlReport = HtmlReportExporter.generateReport(
+                observations,
+                heatmap,
+                screenObserver.getTransitionLogger(),
+                screenObserver.getSessionTimeline()
+            );
+            writeEntry(zos, "report.html", htmlReport);
+
+            // 11. Screenshots
             for (int i = 0; i < screenshots.size(); i++) {
                 ByteArrayOutputStream bos = new ByteArrayOutputStream();
                 screenshots.get(i).compress(Bitmap.CompressFormat.PNG, 85, bos);
@@ -81,33 +113,33 @@ public class ZipExporter {
         }
     }
 
-    private void writeZipEntry(ZipOutputStream zos, String name, String content) throws Exception {
+    private void writeEntry(ZipOutputStream zos, String name, String content) throws Exception {
         ZipEntry entry = new ZipEntry(name);
         zos.putNextEntry(entry);
         zos.write(content.getBytes("UTF-8"));
         zos.closeEntry();
     }
 
-    private JSONObject buildSummary(List<ObservationData> observations) throws Exception {
-        JSONObject summary = new JSONObject();
+    private JSONObject buildSummary(ScreenObserver obs) throws Exception {
+        JSONObject s = new JSONObject();
+        s.put("total_observations", obs.getObservations().size());
+        s.put("total_screenshots", obs.getScreenshots().size());
+        s.put("total_taps", obs.getTouchHeatmap().getTapCount());
+        s.put("total_gestures", obs.getGestureRecorder().getCount());
+        s.put("total_transitions", obs.getTransitionLogger().getTransitionCount());
+        s.put("total_frame_diffs", obs.getFrameDifferencer().getDiffCount());
+        s.put("total_timeline_events", obs.getSessionTimeline().getEventCount());
+        s.put("session_summary", obs.getSessionTimeline().getSummary());
+
         java.util.Map<String, Integer> screenCounts = new java.util.HashMap<>();
-
-        for (ObservationData obs : observations) {
-            screenCounts.merge(obs.screenType, 1, Integer::sum);
+        for (ObservationData observation : obs.getObservations()) {
+            screenCounts.merge(observation.screenType, 1, Integer::sum);
         }
-
         JSONObject screens = new JSONObject();
         for (java.util.Map.Entry<String, Integer> entry : screenCounts.entrySet()) {
             screens.put(entry.getKey(), entry.getValue());
         }
-
-        summary.put("total_observations", observations.size());
-        summary.put("screen_type_counts", screens);
-        if (!observations.isEmpty()) {
-            summary.put("first_observation", observations.get(0).timestamp);
-            summary.put("last_observation", observations.get(observations.size()-1).timestamp);
-        }
-
-        return summary;
+        s.put("screen_type_counts", screens);
+        return s;
     }
-                }
+        }
