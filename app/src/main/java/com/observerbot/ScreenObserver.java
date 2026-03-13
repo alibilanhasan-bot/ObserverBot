@@ -46,7 +46,6 @@ public class ScreenObserver {
     }
 
     public void analyzeFullScreen(Bitmap bitmap) {
-        // bitmap is already a safe independent copy from ScreenCaptureManager
         InputImage image = InputImage.fromBitmap(bitmap, 0);
 
         recognizer.process(image)
@@ -76,12 +75,16 @@ public class ScreenObserver {
                 sessionTimeline.logScreen(screenType);
                 gestureRecorder.setCurrentScreen(screenType);
 
+                // Show first 60 chars of OCR so Hasan can see what's being read
+                String textPreview = text.length() > 0
+                    ? text.replace("\n", " ").substring(0, Math.min(60, text.length()))
+                    : "(no text)";
+
                 service.updateStatus(
-                    "🔄 Scan #" + observations.size() + "\n" +
-                    "Screen: " + screenType + "\n" +
-                    "Taps: " + touchHeatmap.getTapCount() +
-                    "  Trans: " + transitionLogger.getTransitionCount() + "\n" +
-                    "OCR chars: " + text.length()
+                    "🔄 Scan #" + observations.size() +
+                    "\nScreen: " + screenType +
+                    "\nTaps: " + touchHeatmap.getTapCount() +
+                    "\nOCR: " + textPreview
                 );
 
                 if (observerLoop != null) {
@@ -90,7 +93,6 @@ public class ScreenObserver {
             })
             .addOnFailureListener(e -> {
                 service.updateStatus("❌ OCR Error: " + e.getMessage());
-                // Still recycle bitmap on failure
                 bitmap.recycle();
             });
     }
@@ -116,15 +118,13 @@ public class ScreenObserver {
                 sessionTimeline.logTap(tapX, tapY, lastScreenType);
 
                 service.updateStatus(
-                    "👆 Tap X:" + tapX + " Y:" + tapY + "\n" +
-                    "Screen: " + lastScreenType + "\n" +
-                    "Text: " + (text.isEmpty() ? "(none)" : text.substring(0, Math.min(40, text.length()))) + "\n" +
-                    "Total taps: " + touchHeatmap.getTapCount()
+                    "👆 Tap X:" + tapX + " Y:" + tapY +
+                    "\nScreen: " + lastScreenType +
+                    "\nTap text: " + (text.isEmpty() ? "(none)" : text.substring(0, Math.min(40, text.length()))) +
+                    "\nTotal taps: " + touchHeatmap.getTapCount()
                 );
             })
-            .addOnFailureListener(e -> {
-                cropped.recycle();
-            });
+            .addOnFailureListener(e -> cropped.recycle());
     }
 
     private void addConfidenceScores(Text result, ObservationData obs) {
@@ -136,12 +136,9 @@ public class ScreenObserver {
                 for (Text.Element element : line.getElements()) {
                     Float conf = element.getConfidence();
                     if (conf != null) {
-                        if (conf >= 0.85f) {
-                            confident.append(element.getText()).append(" ");
-                        } else {
-                            lowConf.append(element.getText())
-                                .append("(").append(String.format("%.0f%%", conf * 100)).append(") ");
-                        }
+                        if (conf >= 0.85f) confident.append(element.getText()).append(" ");
+                        else lowConf.append(element.getText())
+                            .append("(").append(String.format("%.0f%%", conf * 100)).append(") ");
                     }
                 }
             }
@@ -153,36 +150,71 @@ public class ScreenObserver {
     }
 
     private String identifyScreen(String text) {
-        if (text == null || text.isEmpty()) return "UNKNOWN";
+        if (text == null || text.trim().isEmpty()) return "UNKNOWN";
 
-        // Donation screens
+        // --- Donation ---
         if (text.contains("Donation Chances")) {
             if (text.contains("0/30") || text.contains("Insufficient")) return "DONATION_EXHAUSTED";
             return "DONATION_AVAILABLE";
         }
-        // Alliance screens
+
+        // --- Alliance ---
         if (text.contains("TECHNOLOGY") || text.contains("Today Donations")) return "ALLIANCE_TECHNOLOGY";
         if (text.contains("Activity Rewards") || text.contains("Shop Rewards")) return "ALLIANCE_GIFT";
         if (text.contains("ALLIANCE") && text.contains("Technology")) return "ALLIANCE_HOME";
-        // Mission screens
+
+        // --- Missions ---
         if (text.contains("Daily Missions")) return "DAILY_MISSIONS";
         if (text.contains("Main Missions")) return "MAIN_MISSIONS";
-        // VIP
+
+        // --- VIP ---
         if (text.contains("Claim Free Daily") || text.contains("Today VIP Points")) return "VIP_SCREEN";
-        // Search screens
+
+        // --- Search screens ---
         if (text.contains("Defeat Zombies")) return "ZOMBIE_SEARCH";
         if (text.contains("Deploy Engine Squad")) return "FIELD_SEARCH";
-        // Popups
-        if (text.contains("Auto collect AFK")) return "AFK_POPUP";
-        // Map
-        if (text.contains("X:") && text.contains("Y:")) return "WORLD_MAP";
-        // Base/city — what we saw in the screenshots
-        if (text.contains("Alliance Center") || text.contains("Engine Barracks") ||
-            text.contains("Trading Post") || text.contains("Rider Barracks")) return "BASE_CITY";
-        if (text.contains("General Notice") || text.contains("Optimized Mode")) return "BASE_CITY";
-        if (text.contains("Campaign") && text.contains("Alliance") &&
-            text.contains("Hero")) return "BASE_CITY";
 
+        // --- Popups ---
+        if (text.contains("Auto collect AFK")) return "AFK_POPUP";
+
+        // --- Map ---
+        if (text.contains("X:") && text.contains("Y:")) return "WORLD_MAP";
+
+        // --- Base / City view ---
+        if (text.contains("Alliance Center") || text.contains("Engine Barracks") ||
+            text.contains("Trading Post")    || text.contains("Rider Barracks") ||
+            text.contains("General Notice")  || text.contains("Optimized Mode") ||
+            text.contains("Wasteland")       || text.contains("Arms Race")) return "BASE_CITY";
+        if (text.contains("Campaign") && text.contains("Alliance") && text.contains("Hero")) return "BASE_CITY";
+
+        // --- Hero / Commander screens ---
+        if (text.contains("Hero") && text.contains("Level")) return "HERO_SCREEN";
+        if (text.contains("Commander") && text.contains("Experience")) return "HERO_SCREEN";
+
+        // --- Research / Building ---
+        if (text.contains("Research") && text.contains("Complete")) return "RESEARCH_SCREEN";
+        if (text.contains("Speed Up") || text.contains("Speedup")) return "BUILD_OR_RESEARCH";
+
+        // --- Mail / Inbox ---
+        if (text.contains("System Mail") || text.contains("Alliance Mail")) return "MAIL_SCREEN";
+
+        // --- Events ---
+        if (text.contains("Event") && text.contains("Reward")) return "EVENT_SCREEN";
+        if (text.contains("Sign In") || text.contains("Check In")) return "CHECKIN_SCREEN";
+
+        // --- Store / Shop ---
+        if (text.contains("Gem") && text.contains("Pack")) return "STORE_SCREEN";
+        if (text.contains("Limited Offer") || text.contains("Special Offer")) return "STORE_SCREEN";
+
+        // --- Troop training ---
+        if (text.contains("Training") && text.contains("Queue")) return "TRAINING_SCREEN";
+        if (text.contains("Tier") && text.contains("Squad")) return "TRAINING_SCREEN";
+
+        // --- Loading / transition ---
+        if (text.contains("Loading") || text.trim().length() < 10) return "LOADING_OR_TRANSITION";
+
+        // --- Fallback: has text but nothing matched ---
+        // Still recorded as UNKNOWN — full OCR text is saved so we can add patterns later
         return "UNKNOWN";
     }
 
@@ -195,4 +227,4 @@ public class ScreenObserver {
     public FrameDifferencer getFrameDifferencer() { return frameDifferencer; }
     public SessionTimeline getSessionTimeline() { return sessionTimeline; }
     public void clearAll() { observations.clear(); screenshots.clear(); }
-                    }
+                                     }
