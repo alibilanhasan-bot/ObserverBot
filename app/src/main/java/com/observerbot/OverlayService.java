@@ -31,8 +31,9 @@ public class OverlayService extends Service {
     private ZipExporter zipExporter;
     private AccessibilityDataStore accessibilityDataStore;
 
-    // Stores last frame so we can diff on tap to find changed region
+    // Last captured frame — updated by ObserverLoop after every scan
     private Bitmap lastFrame = null;
+    private final Object frameLock = new Object();
 
     private static final String CHANNEL_ID = "ObserverBotChannel";
     public static OverlayService instance;
@@ -76,50 +77,74 @@ public class OverlayService extends Service {
         observerLoop.start();
     }
 
-    // Store latest frame from ObserverLoop for tap region inference
+    // Called by ObserverLoop after every successful full scan
+    // Keeps a copy of the latest frame for tap region inference
     public void setLastFrame(Bitmap frame) {
-        if (lastFrame != null && !lastFrame.isRecycled()) lastFrame.recycle();
-        lastFrame = frame;
+        synchronized (frameLock) {
+            if (lastFrame != null && !lastFrame.isRecycled()) {
+                lastFrame.recycle();
+            }
+            // Store a copy — the original will be used/recycled by ScreenObserver
+            try {
+                lastFrame = frame.copy(frame.getConfig(), false);
+            } catch (Exception e) {
+                lastFrame = null;
+            }
+        }
     }
 
-    // Called by GameAccessibilityService on TOUCH_INTERACTION_START
-    // We don't have exact coords — we take a new screenshot immediately
-    // and diff it against the last frame to find where the change happened
+    // Called by GameAccessibilityService on TYPE_TOUCH_INTERACTION_START
+    // Fires on every touch including OpenGL game canvas
     public void onTouchDetected() {
-        if (captureManager == null || observerLoop == null) return;
+        if (captureManager == null) return;
 
-        // Wake scanner to fast mode
-        observerLoop.wakeOnTap();
+        // Wake scanner to fast mode immediately
+        if (observerLoop != null) observerLoop.wakeOnTap();
 
-        // Capture screen right after touch and find changed region
+        // Take a screenshot right now and find where the change happened
         captureManager.capture(newFrame -> {
-            if (lastFrame != null && !lastFrame.isRecycled()) {
-                int[] tapCoords = findChangedRegionCenter(lastFrame, newFrame);
-                if (tapCoords != null) {
-                    int inferredX = tapCoords[0];
-                    int inferredY = tapCoords[1];
-
-                    screenObserver.getGestureRecorder().onTouchDown(inferredX, inferredY);
-                    screenObserver.getGestureRecorder().onTouchUp(inferredX, inferredY);
-                    tapObserver.analyzeAtTap(newFrame, inferredX, inferredY);
-
-                    updateStatus("👆 Tap ~X:" + inferredX + " Y:" + inferredY + "\n" +
-                        "Scans: " + screenObserver.getObservations().size() + "\n" +
-                        "Taps: " + screenObserver.getTouchHeatmap().getTapCount());
-                } else {
-                    // No clear changed region — just do a full scan
-                    screenObserver.analyzeFullScreen(newFrame);
-                }
-            } else {
-                screenObserver.analyzeFullScreen(newFrame);
+            Bitmap before;
+            synchronized (frameLock) {
+                before = lastFrame;
             }
+
+            int inferredX = -1;
+            int inferredY = -1;
+
+            if (before != null && !before.isRecycled()) {
+                int[] coords = findChangedRegionCenter(before, newFrame);
+                if (coords != null) {
+                    inferredX = coords[0];
+                    inferredY = coords[1];
+                }
+            }
+
+            // Always record a tap — use inferred coords or screen center as fallback
+            if (inferredX < 0) {
+                inferredX = newFrame.getWidth() / 2;
+                inferredY = newFrame.getHeight() / 2;
+            }
+
+            // Record gesture
+            screenObserver.getGestureRecorder().onTouchDown(inferredX, inferredY);
+            screenObserver.getGestureRecorder().onTouchUp(inferredX, inferredY);
+
+            // Record in heatmap + run tap OCR
+            final int finalX = inferredX;
+            final int finalY = inferredY;
+            tapObserver.analyzeAtTap(newFrame, finalX, finalY);
+
+            updateStatus("👆 Tap ~X:" + finalX + " Y:" + finalY + "\n" +
+                "Scans: " + screenObserver.getObservations().size() + "\n" +
+                "Taps recorded: " + screenObserver.getTouchHeatmap().getTapCount());
         });
     }
 
-    // Also called by GameAccessibilityService when it has exact coords (UI button taps)
+    // Called by GameAccessibilityService when exact coords available (UI button taps)
     public void onTapDetected(int x, int y) {
         if (captureManager == null) return;
         if (observerLoop != null) observerLoop.wakeOnTap();
+
         screenObserver.getGestureRecorder().onTouchDown(x, y);
         screenObserver.getGestureRecorder().onTouchUp(x, y);
         captureManager.captureForTap(x, y, bitmap ->
@@ -127,11 +152,11 @@ public class OverlayService extends Service {
         );
     }
 
-    // Finds the center of the most-changed region between two frames
-    // Returns [x, y] or null if no significant change found
+    // Compares two frames in 60px blocks, returns center of most-changed region
     private int[] findChangedRegionCenter(Bitmap before, Bitmap after) {
         try {
-            if (before.getWidth() != after.getWidth()) return null;
+            if (before.getWidth() != after.getWidth() ||
+                before.getHeight() != after.getHeight()) return null;
 
             int w = before.getWidth();
             int h = before.getHeight();
@@ -142,30 +167,26 @@ public class OverlayService extends Service {
             for (int bx = 0; bx < w; bx += blockSize) {
                 for (int by = 0; by < h; by += blockSize) {
                     int changed = 0;
-                    int total = 0;
-                    for (int px = bx; px < Math.min(bx + blockSize, w); px += 6) {
-                        for (int py = by; py < Math.min(by + blockSize, h); py += 6) {
+                    int bw = Math.min(blockSize, w - bx);
+                    int bh = Math.min(blockSize, h - by);
+                    for (int px = bx; px < bx + bw; px += 6) {
+                        for (int py = by; py < by + bh; py += 6) {
                             int p1 = before.getPixel(px, py);
                             int p2 = after.getPixel(px, py);
                             int diff = Math.abs(android.graphics.Color.red(p1) - android.graphics.Color.red(p2))
                                      + Math.abs(android.graphics.Color.green(p1) - android.graphics.Color.green(p2))
                                      + Math.abs(android.graphics.Color.blue(p1) - android.graphics.Color.blue(p2));
                             if (diff > 25) changed++;
-                            total++;
                         }
                     }
-                    if (total > 0 && changed > maxChange) {
+                    if (changed > maxChange) {
                         maxChange = changed;
-                        bestX = bx + blockSize / 2;
-                        bestY = by + blockSize / 2;
+                        bestX = bx + bw / 2;
+                        bestY = by + bh / 2;
                     }
                 }
             }
-
-            // Only return if change was significant enough
-            if (maxChange > 3 && bestX >= 0) return new int[]{bestX, bestY};
-            return null;
-
+            return (maxChange > 2 && bestX >= 0) ? new int[]{bestX, bestY} : null;
         } catch (Exception e) {
             return null;
         }
@@ -186,7 +207,6 @@ public class OverlayService extends Service {
         params.y = 100;
 
         statusText = overlayView.findViewById(R.id.statusText);
-
         Button exportBtn = overlayView.findViewById(R.id.btnExport);
         exportBtn.setOnClickListener(v -> exportData());
 
@@ -279,8 +299,10 @@ public class OverlayService extends Service {
         instance = null;
         if (observerLoop != null) observerLoop.stop();
         if (captureManager != null) captureManager.stop();
-        if (lastFrame != null && !lastFrame.isRecycled()) lastFrame.recycle();
+        synchronized (frameLock) {
+            if (lastFrame != null && !lastFrame.isRecycled()) lastFrame.recycle();
+        }
         if (overlayView != null) try { windowManager.removeView(overlayView); } catch (Exception ignored) {}
         if (stopButtonView != null) try { windowManager.removeView(stopButtonView); } catch (Exception ignored) {}
     }
-                                                }
+                }
